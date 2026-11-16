@@ -248,6 +248,7 @@ function resetRivals() {
       phase: rnd(0, 6.28),
       think: rnd(0.2, 1.0),
       dead: false,
+      finished: false,
       respawn: 0,
       sx: undefined,
       sy: undefined,
@@ -284,6 +285,13 @@ let distance = 0;
 let passedCars = 0;
 let prevFrac = 0;
 let lap = 0;
+
+/* цель гонки: финишировать через RACE_LAPS кругов */
+const RACE_LAPS = 4;
+const PLACE_BONUS = [5000, 2500, 1200, 800, 500, 300];
+let finCount = 0;        // соперники, финишировавшие раньше игрока
+let raceFinished = false;
+let finishBonus = 0;
 let msg = "";
 let msgColor = "#fff";
 let msgTimer = 0;
@@ -312,8 +320,15 @@ const cops = [];
 const pickups = [];
 const barrels = [];
 
-function gameOver() {
-  finalPlace = playerPlace();
+function gameOver(finished) {
+  raceFinished = !!finished;
+  finalPlace = raceFinished ? Math.min(finCount + 1, rivals.length + 1) : playerPlace();
+  if (raceFinished) {
+    finishBonus = PLACE_BONUS[finalPlace - 1] || 300;
+    score += finishBonus;
+  } else {
+    finishBonus = 0;
+  }
   state = "over";
   if (score > best) {
     best = Math.floor(score);
@@ -329,6 +344,7 @@ function startRace() {
   position = 0; playerX = 0; speed = 0; steerVis = 0;
   score = 0; timeLeft = 80; nitro = 100; combo = 1; comboTimer = 0;
   distance = 0; lap = 0; passedCars = 0; prevFrac = 0;
+  finCount = 0; raceFinished = false; finishBonus = 0;
   shake = 0; flash = 0; collCooldown = 0; msgTimer = 0;
   kills = 0; gunCooldown = 0; muzzleFlash = 0; tankRecoil = 0;
   finalPlace = 1;
@@ -919,6 +935,11 @@ function updateRivals(dt) {
     const prevZ = r.z;
     r.z = inc(r.z, r.speed * dt, trackLength);
     r.progress += r.speed * dt;
+    if (!r.finished && r.progress >= RACE_LAPS * trackLength) {
+      r.finished = true;
+      finCount++;
+      if (state === "race") showMsg(r.name + " ФИНИШИРОВАЛ", "#9fe8ff");
+    }
     r.wobble += dt * r.wobbleSpeed;
 
     // объезд трафика и других соперников
@@ -1293,7 +1314,7 @@ function update(dt) {
 
   // часы
   timeLeft -= dt;
-  if (timeLeft <= 0) { timeLeft = 0; gameOver(); return; }
+  if (timeLeft <= 0) { timeLeft = 0; gameOver(false); return; }
 
   // чекпоинты / круги
   const frac = position / trackLength;
@@ -1307,8 +1328,17 @@ function update(dt) {
       setTimeout(function () { tone(1320, 0.18, "triangle", 0.16); }, 110);
     }
   }
-  if (frac < prevFrac) lap++;
+  if (frac < prevFrac) {
+    lap++;
+    if (lap === RACE_LAPS - 1) showMsg("ФИНАЛЬНЫЙ КРУГ!", "#ffd23f");
+  }
   prevFrac = frac;
+
+  // финиш гонки
+  if (!raceFinished && distance >= RACE_LAPS * trackLength) {
+    gameOver(true);
+    return;
+  }
 
   if (comboTimer > 0) {
     comboTimer -= dt;
@@ -2375,7 +2405,7 @@ function drawHUD() {
   ctx.font = "700 10px Consolas, monospace";
   ctx.fillStyle = "rgba(180,230,255,0.65)";
   ctx.textAlign = "left";
-  ctx.fillText("КРУГ " + (lap + 1), px, py - 10);
+  ctx.fillText("КРУГ " + Math.min(lap + 1, RACE_LAPS) + " / " + RACE_LAPS, px, py - 10);
   ctx.textAlign = "right";
   ctx.fillText("ОБГОНОВ: " + passedCars, px + pw, py - 10);
 
@@ -2419,7 +2449,7 @@ function drawMenu() {
 
   ctx.font = "600 17px Consolas, monospace";
   ctx.fillStyle = "#9fe8ff";
-  ctx.fillText("неоновый танк • соперники • полиция • беспредел", W / 2, H * 0.40);
+  ctx.fillText("неоновый танк • гонка на 4 круга • полиция • беспредел", W / 2, H * 0.40);
 
   const cw = 560;
   const bx = W / 2 - cw / 2;
@@ -2477,12 +2507,12 @@ function drawOver() {
   ctx.fillStyle = "#ff2f6a";
   ctx.shadowColor = "#ff2f6a";
   ctx.shadowBlur = 36;
-  ctx.fillText("ЗАЕЗД ОКОНЧЕН", W / 2, H * 0.28);
+  ctx.fillText(raceFinished ? "ФИНИШ!" : "ЗАЕЗД ОКОНЧЕН", W / 2, H * 0.28);
   ctx.restore();
 
   ctx.font = "700 15px Consolas, monospace";
-  ctx.fillStyle = "#9fe8ff";
-  ctx.fillText("ВРЕМЯ ВЫШЛО", W / 2, H * 0.34);
+  ctx.fillStyle = raceFinished ? "#ffd23f" : "#9fe8ff";
+  ctx.fillText(raceFinished ? ("МЕСТО " + finalPlace + " ИЗ " + (rivals.length + 1)) : "ВРЕМЯ ВЫШЛО", W / 2, H * 0.34);
 
   ctx.font = "900 64px Consolas, monospace";
   ctx.fillStyle = "#ffffff";
@@ -2494,7 +2524,9 @@ function drawOver() {
 
   ctx.font = "700 17px Consolas, monospace";
   ctx.fillStyle = "#ffd23f";
-  ctx.fillText("ОБГОНОВ: " + passedCars + "     УНИЧТОЖЕНО: " + kills + "     ДИСТАНЦИЯ: " + (distance / SEGLEN / 10).toFixed(1) + " км", W / 2, H * 0.62);
+  let statsLine = "ОБГОНОВ: " + passedCars + "     УНИЧТОЖЕНО: " + kills + "     ДИСТАНЦИЯ: " + (distance / SEGLEN / 10).toFixed(1) + " км";
+  if (raceFinished) statsLine += "     БОНУС: +" + fmt(finishBonus);
+  ctx.fillText(statsLine, W / 2, H * 0.62);
 
   ctx.fillStyle = "#ffffff";
   ctx.font = "800 20px Consolas, monospace";

@@ -137,15 +137,15 @@
   <div class="panel" id="pGun"><label>ПУШКА <span id="gunState">F / CTRL</span></label>
     <div class="bar"><i id="gunFill"></i></div></div>
   <div id="speedo"><b id="speed">0</b><label>КМ/Ч</label></div>
-  <div id="prog"><i id="progFill"></i><s style="left:25%"></s><s style="left:50%"></s><s style="left:75%"></s>
-    <u id="progDot"></u><label id="lap">КРУГ 1</label><label id="pass">ОБГОНОВ: 0</label></div>
+  <div id="prog"><i id="progFill"></i><s style="left:50%"></s>
+    <u id="progDot"></u><label id="lap">КРУГ 1 / 2</label><label id="pass">ОБГОНОВ: 0</label></div>
   <div id="msg"></div>
   <div id="count"></div>
 </div>
 
 <div id="menu" class="screen on">
   <h1>NEON RUSH 3D</h1>
-  <div class="sub">неоновый танк • объёмная трасса • полиция • беспредел</div>
+  <div class="sub">неоновый танк • гонка на 2 круга • полиция • беспредел</div>
   <div class="keys">
     <b>← → / A D</b><span>руль</span>
     <b>↑ W</b><span>газ</span>
@@ -161,8 +161,8 @@
 </div>
 
 <div id="over" class="screen">
-  <h1>ЗАЕЗД ОКОНЧЕН</h1>
-  <div class="sub">ВРЕМЯ ВЫШЛО</div>
+  <h1 id="overTitle">ЗАЕЗД ОКОНЧЕН</h1>
+  <div class="sub" id="overSub">ВРЕМЯ ВЫШЛО</div>
   <div class="big" id="overScore">0</div>
   <div class="lbl">ОЧКИ</div>
   <div class="stats" id="overStats"></div>
@@ -206,6 +206,13 @@ const CENTRIFUGAL = 0.05;
 const GUN_COOLDOWN = 0.34;
 const LANE_OFFSETS = [-0.62, -0.2, 0.2, 0.62];
 const CHECKPOINTS = [0.25, 0.5, 0.75];
+
+/* цель гонки: финишировать через RACE_LAPS кругов */
+const RACE_LAPS = 2;
+const PLACE_BONUS = [5000, 2500, 1200, 800, 500, 300];
+let finCount = 0;        // соперники, финишировавшие раньше игрока
+let raceFinished = false;
+let finishBonus = 0;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -854,7 +861,8 @@ const dom = {
   overBest: $("overBest"), menuBest: $("menuBest"), menuHint: $("menuHint"),
   overHint: $("overHint"), touchUI: $("touchUI"),
   nitroState: $("nitroState"), gunState: $("gunState"),
-  stars: $("stars"), rampage: $("rampage")
+  stars: $("stars"), rampage: $("rampage"),
+  overTitle: $("overTitle"), overSub: $("overSub")
 };
 
 function showMsg(text, color) {
@@ -865,10 +873,20 @@ function showMsg(text, color) {
   msgTimer = 1.6;
 }
 
-function gameOver() {
+function gameOver(finished) {
+  raceFinished = !!finished;
+  const place = raceFinished ? Math.min(finCount + 1, rivals.length + 1) : playerPlace();
+  if (raceFinished) {
+    finishBonus = PLACE_BONUS[place - 1] || 300;
+    score += finishBonus;
+  } else {
+    finishBonus = 0;
+  }
   state = "over";
+  dom.overTitle.textContent = raceFinished ? "ФИНИШ!" : "ЗАЕЗД ОКОНЧЕН";
+  dom.overSub.textContent = raceFinished ? ("МЕСТО " + place + " ИЗ " + (rivals.length + 1) + "   БОНУС: +" + fmt(finishBonus)) : "ВРЕМЯ ВЫШЛО";
   dom.overScore.textContent = fmt(score);
-  dom.overStats.textContent = "МЕСТО: " + playerPlace() + "   ОБГОНОВ: " + passedCars +
+  dom.overStats.textContent = "МЕСТО: " + place + "   ОБГОНОВ: " + passedCars +
     "   УНИЧТОЖЕНО: " + kills + (copKills ? "   КОПОВ: " + copKills : "") +
     "   ДИСТАНЦИЯ: " + (distance / 1000).toFixed(1) + " км";
   if (score > best) {
@@ -892,6 +910,7 @@ function startRace() {
   sPos = 0; playerX = 0; speed = 0; steerVis = 0; prevS = 0;
   score = 0; timeLeft = 80; nitro = 100; combo = 1; comboTimer = 0;
   distance = 0; lap = 0; passedCars = 0; shake = 0; msgTimer = 0;
+  finCount = 0; raceFinished = false; finishBonus = 0;
   kills = 0; gunCd = 0; muzzleFlash = 0; recoil = 0; nextCp = 0;
   collCd = 0; camMode = 0;
   wanted = 0; heatTimer = 0; rampage = 0; rampageTimer = 0; barrelTimer = 6; sirenTimer = 0; copKills = 0;
@@ -1306,7 +1325,7 @@ function resetRivals() {
       progress: d.grid * 8,
       wobble: rnd(0, 6.28), wobbleSpeed: rnd(0.4, 1.0),
       phase: rnd(0, 6.28), think: rnd(0.2, 1.0),
-      dead: false, respawn: 0
+      dead: false, finished: false, respawn: 0
     };
   });
 }
@@ -1401,6 +1420,11 @@ function updateRivals(dt) {
     const prevZ = r.s;
     r.s = incS(r.s + r.speed * dt, 0);
     r.progress += r.speed * dt;
+    if (!r.finished && r.progress >= RACE_LAPS * trackLen) {
+      r.finished = true;
+      finCount++;
+      if (state === "race") showMsg(r.name + " ФИНИШИРОВАЛ", "#9fe8ff");
+    }
     r.wobble += dt * r.wobbleSpeed;
 
     // ИИ перестроений
@@ -1872,7 +1896,16 @@ function update(dt) {
   sPos = incS(sPos + speed * dt, 0);
   distance += speed * dt;
   score += speed * dt * 0.015;
-  if (sPos < prevS - trackLen * 0.5) lap++;
+  if (sPos < prevS - trackLen * 0.5) {
+    lap++;
+    if (lap === RACE_LAPS - 1) showMsg("ФИНАЛЬНЫЙ КРУГ!", "#ffd23f");
+  }
+
+  // финиш гонки
+  if (!raceFinished && distance >= RACE_LAPS * trackLen) {
+    gameOver(true);
+    return;
+  }
 
   // нитро-пламя из выхлопа
   if (nitroActive) {
@@ -1884,7 +1917,7 @@ function update(dt) {
 
   // часы
   timeLeft -= dt;
-  if (timeLeft <= 0) { timeLeft = 0; gameOver(); return; }
+  if (timeLeft <= 0) { timeLeft = 0; gameOver(false); return; }
 
   // чекпоинты
   const frac = sPos / trackLen;
@@ -2070,12 +2103,13 @@ function drawHUD() {
   dom.gunState.textContent = ready ? "ГОТОВА • " + kills : "ПЕРЕЗАРЯДКА";
 
   dom.speed.textContent = Math.round(speed / MAXSPEED * 360);
-  dom.lap.textContent = "КРУГ " + (lap + 1);
+  dom.lap.textContent = "КРУГ " + Math.min(lap + 1, RACE_LAPS) + " / " + RACE_LAPS;
   dom.pass.textContent = "ОБГОНОВ: " + passedCars;
 
-  const frac = sPos / trackLen;
-  dom.progFill.style.width = (frac * 100) + "%";
-  dom.progDot.style.left = (frac * 100) + "%";
+  // прогресс всей гонки (маркер 50% — граница кругов)
+  const raceFrac = clamp(distance / (RACE_LAPS * trackLen), 0, 1);
+  dom.progFill.style.width = (raceFrac * 100) + "%";
+  dom.progDot.style.left = (raceFrac * 100) + "%";
 
   /* GTA: розыск и беспредел */
   const stars = Math.min(5, Math.ceil(wanted / 20));
